@@ -1,0 +1,47 @@
+parameters:
+- name: terraform_directory
+  type: string
+  default: "azure/resource_group/v1.1.0/example" 
+- name: backend_tenant_id
+  type: string
+  default: "687f51c3-0c5d-4905-84f8-97c683a5b9d1"
+- name: backend_subscription_id
+  type: string
+  default: "7877d8aa-c51f-4741-b864-e77ef88cd435"
+- name: backend_state_file_resource_group_name
+  type: string
+  default: "vdi"
+- name: backend_state_file_storage_account
+  type: string
+  default: "stgvdi"
+- name: backend_state_file_container
+  type: string
+  default: "development"
+- name: backend_state_file_name
+  type: string
+  default: "con1_resource_group"
+- name: provider_configs
+  type: object
+  default:
+    provider_subscription_id: $(parameters.provider_subscription_id)
+    provider_tenant_id: $(parameters.provider_tenant_id)
+
+steps:
+- task: Bash@3
+  displayName: InitAzureBackend
+  inputs:
+    targetType: 'inline'
+    script: |
+      export ARM_USE_MSI=true
+      terraform init \
+      -backend-config="resource_group_name=${{ parameters.backend_state_file_resource_group_name }}" \
+      -backend-config="storage_account_name=${{ parameters.backend_state_file_storage_account }}" \
+      -backend-config="container_name=${{ parameters.backend_state_file_container }}" \
+      -backend-config="key=${{ parameters.backend_state_file_name }}" \
+      -backend-config="subscription_id=${{ parameters.backend_subscription_id }}" \
+      -backend-config="tenant_id=${{ parameters.backend_tenant_id }}"
+    workingDirectory: ${{ parameters.terraform_directory }}
+  env:
+    ${{ each parameter in parameters.provider_configs }}:
+      TF_VAR_${{ parameter.Key }}: ${{ parameter.Value }}
+

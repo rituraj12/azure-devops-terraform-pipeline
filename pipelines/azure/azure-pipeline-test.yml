@@ -1,0 +1,58 @@
+# Pipeline for Deploying Management Groups and Hierarchy
+name: Assignment-PwC-Pipeline
+trigger: none
+
+parameters:
+  - name: action
+    type: string
+    values:
+      - apply
+      - destroy
+    displayName: Action
+
+pr: none
+
+variables:
+  - group: Azure-Pipeline-VG
+
+pool: 
+  name: azure-pool-linux
+
+stages:
+  - stage: fetch_modules
+    displayName: "Fetching Modules"
+    jobs:
+      - job: pullandpublish
+        displayName: "Publishing Modules"
+        steps:
+          - task: PublishPipelineArtifact@1
+            inputs:
+              targetPath: '$(System.DefaultworkingDirectory)'
+              artifact: 'Ploceus'
+              publishLocation: 'pipeline'
+          - task: PublishPipelineArtifact@1
+            inputs:
+              targetPath: '$(System.DefaultWorkingDirectory)/pipelines/azure/var_files'
+              artifact: 'test'
+              publishLocation: 'pipeline_tfvar'
+
+  - template: /pipelines/azure/templates/azure-pipeline-template-linux.yml
+    parameters:
+      environment: prod
+      provider_subscription_id: $(backend_subscription_id)
+      provider_tenant_id: $(backend_tenant_id)
+      action: ${{ parameters.action }}
+      backend:
+        backend_subscription_id: $(backend_subscription_id)
+        backend_tenant_id: $(backend_tenant_id)
+        state_file_resource_group_name: $(state_file_resource_group_name)
+        state_file_storage_account: $(state_file_storage_account)
+        state_file_container: $(state_file_container)
+      modules:
+        - name: key_vault
+          version: v2.0.0
+          stageName: key_vault
+          skip: false 
+          varfile: "key_vault.tfvars" 
+          approvalRequired: true 
+          dependsOn: ["none"]

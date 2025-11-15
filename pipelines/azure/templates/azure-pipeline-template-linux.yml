@@ -1,0 +1,162 @@
+parameters:
+  - name: environment
+    type: string
+  - name: modules
+    type: object
+    default:
+    - type: default
+  - name: provider_subscription_id
+    type: string
+  - name: provider_tenant_id
+    type: string
+  - name: backend
+    type: object
+  - name: action
+    type: string
+    default: apply
+    values:
+    - apply
+    - destroy
+stages:
+  - ${{ each component in parameters.modules }}:
+    - stage: ${{ component.stageName }}
+      displayName: "${{ component.stageName }}"
+      variables:
+      - name: skipit
+        value: ${{ component.skip }}
+      dependsOn:
+        - ${{ each dependency in component.dependsOn }}:
+            - ${{ if eq(dependency, 'none') }}:
+              - fetch_modules
+            - ${{ else }}:
+              - ${{ dependency }}
+      condition: and(succeeded(),eq(variables.skipit, 'false'))
+      jobs:
+        - job: DeploymentPlan
+          ${{ if eq(component.approvalRequired,'false') }}:
+            displayName: ${{ component.name }}
+          ${{ else }}:
+            displayName: ${{ component.name }}_plan
+          steps:
+            - task: DownloadPipelineArtifact@2
+              inputs:
+                buildType: 'current'
+                artifactName: 'Ploceus'
+                itemPattern: 'azure-modules/${{ component.name }}/${{ component.version }}/**/*'
+                targetPath: '$(system.defaultworkingdirectory)/module_downloaded'
+            - template: /pipelines/yml_templates/steps_linux/make-terraformdirectory.yml
+              parameters:
+                # module_path: $(system.defaultworkingdirectory)/module_downloaded/azure-modules/${{ component.name }}/${{ component.version }}
+                # tfvars_path: $(System.DefaultWorkingDirectory)/pipelines/azure/var_files/${{ component.varfile }}
+                # backend_path: $(System.DefaultWorkingDirectory)/pipelines/azure/aux_files/backend.tf
+                # provider_path: $(System.DefaultWorkingDirectory)/pipelines/azure/aux_files/provider.tf
+                # provider_path_for_3_33: $(System.DefaultWorkingDirectory)/pipelines/azure/aux_files/provider_3_33.tf
+                module_path: "$(System.DefaultWorkingDirectory)/module_downloaded/azure-modules/${{ component.name }}/${{ component.version }}"
+                tfvars_path: "$(System.DefaultWorkingDirectory)/pipelines/azure/var_files/${{ component.varfile }}"
+                backend_path: "$(System.DefaultWorkingDirectory)/pipelines/azure/aux_files/backend.tf"
+                provider_path: "$(System.DefaultWorkingDirectory)/pipelines/azure/aux_files/provider.tf"
+                provider_path_for_3_33: "$(System.DefaultWorkingDirectory)/pipelines/azure/aux_files/provider_3_33.tf"
+                module_version: "${{ component.version }}"
+            - template: /pipelines/yml_templates/steps_linux/terraform-initazure.yml
+              parameters:
+                terraform_directory: "$(move_files.terraform_resource_path_variable)"
+                backend_tenant_id: "${{ parameters.backend.backend_tenant_id }}"
+                backend_subscription_id: "${{ parameters.backend.backend_subscription_id }}"
+                backend_state_file_resource_group_name: "${{ parameters.backend.state_file_resource_group_name }}"
+                backend_state_file_storage_account : "${{ parameters.backend.state_file_storage_account }}"
+                backend_state_file_container: "${{ parameters.backend.state_file_container }}"
+                backend_state_file_name: "${{ component.name }}/${{ parameters.environment }}_${{ component.stageName }}.tfstate"
+            - template: /pipelines/yml_templates/steps_linux/terraform-plan.yml
+              parameters:
+                action: ${{ parameters.action }}
+                terraform_directory: "$(move_files.terraform_resource_path_variable)"
+                output_plan_filepath: "$(build.artifactstagingdirectory)/${{ parameters.environment }}_${{ component.name }}.tfplan"
+                # output_plan_filepath: "$(build.artifactstagingdirectory)/${{ parameters.environment }}_${{ component.name }}.tfplan"
+                # output_plan_filepath: '$(build.artifactstagingdirectory)\${{ parameters.environment }}_${{ component.name }}.tfplan'
+                provider_configs:
+                  provider_subscription_id: "${{ parameters.provider_subscription_id }}"
+                  provider_tenant_id: "${{ parameters.provider_tenant_id }}"
+            - ${{ if eq(component.approvalRequired,'false') }}:    
+              - template: /pipelines/yml_templates/steps_linux/terraform-applydestroy.yml
+                parameters:
+                  terraform_directory: "$(move_files.terraform_resource_path_variable)"
+                  plan_filepath: "$(build.artifactstagingdirectory)/${{ parameters.environment }}_${{ component.name }}.tfplan"
+                  # plan_filepath: "$(build.artifactstagingdirectory)/${{ parameters.environment }}_${{ component.name }}.tfplan"
+                  # plan_filepath: '$(build.artifactstagingdirectory)/${{ parameters.environment }}_${{ component.name }}.tfplan'
+                  action: ${{ parameters.action }}
+                  provider_configs:
+                    provider_subscription_id: "${{ parameters.provider_subscription_id }}"
+                    provider_tenant_id: "${{ parameters.provider_tenant_id }}"
+            - ${{ else }}:
+              - task: PublishPipelineArtifact@1
+                displayName: "Publishing Plan Artifacts"
+                inputs:
+                  # targetPath: $(cygpath -u "$(build.artifactstagingdirectory)/${{ parameters.environment }}_${{ component.name }}.tfplan")
+                  # targetPath: "$(build.artifactstagingdirectory)/${{ parameters.environment }}_${{ component.name }}.tfplan"
+                  targetPath: '$(build.artifactstagingdirectory)/${{ parameters.environment }}_${{ component.name }}.tfplan'
+                  artifact: '$(System.StageName)_$(System.StageAttempt)'
+                  publishLocation: 'pipeline'
+        - ${{ if eq(component.approvalRequired,'true') }}:
+          - job: approval
+            dependsOn: ["DeploymentPlan"]
+            displayName: Approval_Required
+            pool: server
+            timeoutInMinutes: 2880 
+            steps:
+            - task: ManualValidation@0
+              timeoutInMinutes: 2880
+              inputs:
+                notifyUsers: |
+                  riturajghosh61@gmail.com
+                instructions: 'Please review and appove for apply'
+                onTimeout: 'reject'
+          - job: ApplyDeployment
+            displayName: ${{ component.stageName }}_apply
+            dependsOn: ["approval"]
+            steps:
+              - task: DownloadPipelineArtifact@2
+                displayName: "Downloading module artifacts"
+                inputs:
+                  buildType: 'current'
+                  artifactName: 'Ploceus'
+                  itemPattern: 'azure-modules/${{ component.name }}/${{ component.version }}/**/*'
+                  targetPath: '$(system.defaultworkingdirectory)/module_downloaded'
+              - task: DownloadPipelineArtifact@2
+                displayName: "Downloading plan artifacts for apply"
+                inputs:
+                  buildType: 'current'
+                  artifactName: '$(System.StageName)_$(System.StageAttempt)'
+                  itemPattern: '${{ parameters.environment }}_${{ component.name }}.tfplan'
+                  targetPath: '$(build.artifactstagingdirectory)'
+              - template: /pipelines/yml_templates/steps_linux/make-terraformdirectory.yml
+                parameters:
+                  # module_path: $(system.defaultworkingdirectory)/module_downloaded/azure-modules/${{ component.name }}/${{ component.version }}
+                  # tfvars_path: $(System.DefaultWorkingDirectory)/pipelines/azure/var_files/${{ component.varfile }}
+                  # backend_path: $(System.DefaultWorkingDirectory)/pipelines/azure/aux_files/backend.tf
+                  # provider_path: $(System.DefaultWorkingDirectory)/pipelines/azure/aux_files/provider.tf
+                  # provider_path_for_3_33: $(System.DefaultWorkingDirectory)/pipelines/azure/aux_files/provider_3_33.tf
+                  module_path: "$(System.DefaultWorkingDirectory)/module_downloaded/azure-modules/${{ component.name }}/${{ component.version }}"
+                  tfvars_path: "$(System.DefaultWorkingDirectory)/pipelines/azure/var_files/${{ component.varfile }}"
+                  backend_path: "$(System.DefaultWorkingDirectory)/pipelines/azure/aux_files/backend.tf"
+                  provider_path: "$(System.DefaultWorkingDirectory)/pipelines/azure/aux_files/provider.tf"
+                  provider_path_for_3_33: "$(System.DefaultWorkingDirectory)/pipelines/azure/aux_files/provider_3_33.tf"
+                  module_version: "${{ component.version }}"
+              - template: /pipelines/yml_templates/steps_linux/terraform-initazure.yml
+                parameters:
+                  terraform_directory: "$(move_files.terraform_resource_path_variable)"
+                  backend_tenant_id: "${{ parameters.backend.backend_tenant_id }}"
+                  backend_subscription_id: "${{ parameters.backend.backend_subscription_id }}"
+                  backend_state_file_resource_group_name: "${{ parameters.backend.state_file_resource_group_name }}"
+                  backend_state_file_storage_account : "${{ parameters.backend.state_file_storage_account }}"
+                  backend_state_file_container: "${{ parameters.backend.state_file_container }}"
+                  backend_state_file_name: "${{ component.name }}/${{ parameters.environment }}_${{ component.stageName }}.tfstate"       
+              - template: /pipelines/yml_templates/steps_linux/terraform-applydestroy.yml
+                parameters:
+                  terraform_directory: "$(move_files.terraform_resource_path_variable)"
+                  plan_filepath: "$(build.artifactstagingdirectory)/${{ parameters.environment }}_${{ component.name }}.tfplan"
+                  # plan_filepath: "$(build.artifactstagingdirectory)/${{ parameters.environment }}_${{ component.name }}.tfplan"
+                  # plan_filepath: '$(build.artifactstagingdirectory)/${{ parameters.environment }}_${{ component.name }}.tfplan'
+                  action: ${{ parameters.action }}
+                  provider_configs:
+                    provider_subscription_id: "${{ parameters.provider_subscription_id }}"
+                    provider_tenant_id: "${{ parameters.provider_tenant_id }}"

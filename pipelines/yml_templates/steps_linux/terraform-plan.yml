@@ -1,0 +1,43 @@
+  parameters:
+  - name: terraform_directory
+    type: string
+    default: "azure/resource_group/v1.1.0/example"
+  - name: output_plan_filepath
+    type: string
+    default: "/azp/_work/_temp/plan_file.tfplan"
+  - name: provider_configs
+    type: object
+    default:
+      provider_subscription_id: $(parameters.provider_subscription_id)
+      provider_tenant_id: $(parameters.provider_tenant_id)
+  - name: action
+    type: string
+    default: "apply"
+    values:
+      - apply
+      - destroy
+  steps:
+  - task: Bash@3
+    displayName: 'plan'
+    inputs:
+      targetType: 'inline'
+      script: |
+        export ARM_USE_MSI=true
+        mkdir -p /tmp
+        touch /tmp/plan_output.log
+        echo "Starting Terraform plan..."
+        if [[ '${{ parameters.action }}' == 'apply' ]]; then
+          terraform plan -out=${{ parameters.output_plan_filepath }} 2>&1 | tee /tmp/plan_output.log
+          TF_EXIT=${PIPESTATUS[0]}
+        else
+          terraform plan -destroy -out=${{ parameters.output_plan_filepath }} 2>&1 | tee /tmp/plan_output.log
+          TF_EXIT=${PIPESTATUS[0]}
+        fi
+        if [ $TF_EXIT -ne 0 ]; then
+          echo "Terraform plan failed with exit code $TF_EXIT"
+          exit $TF_EXIT
+        fi
+      workingDirectory: ${{ parameters.terraform_directory }}
+    env:
+      ${{ each parameter in parameters.provider_configs }}:
+        TF_VAR_${{ parameter.Key }}: ${{ parameter.Value }}
